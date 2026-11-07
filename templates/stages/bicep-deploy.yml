@@ -1,0 +1,100 @@
+# Stage: deploy validated Bicep files to one environment. Approvals and checks live on the Azure DevOps environment.
+parameters:
+  # Stage identifier (letters, digits, underscore).
+  - name: stageName
+    type: string
+    default: deploy
+  # Stages this stage depends on.
+  - name: dependsOn
+    type: object
+    default: []
+  # Stage condition.
+  - name: condition
+    type: string
+    default: succeeded()
+  # Agent pool definition.
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-24.04
+  # Azure DevOps environment name (approvals and checks are configured on it).
+  - name: environmentName
+    type: string
+  # ARM service connection (workload identity federation) scoped to the target resource group or subscription.
+  - name: serviceConnection
+    type: string
+  # Deployment scope: resourceGroup or subscription.
+  - name: deploymentScope
+    type: string
+    default: resourceGroup
+    values:
+      - resourceGroup
+      - subscription
+  # Target resource group (resourceGroup scope).
+  - name: resourceGroupName
+    type: string
+    default: ''
+  # Deployment location (subscription scope).
+  - name: location
+    type: string
+    default: ''
+  # Main Bicep file inside the artifact.
+  - name: templateFile
+    type: string
+    default: main.bicep
+  # Parameters file inside the artifact. Leave empty for none.
+  - name: parametersFile
+    type: string
+    default: ''
+  # Artifact published by bicep-validate.
+  - name: artifactName
+    type: string
+    default: bicep
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: Deploy (${{ parameters.environmentName }})
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: ${{ parameters.condition }}
+    jobs:
+      - deployment: deploy
+        displayName: Deploy Bicep to ${{ parameters.environmentName }}
+        pool: ${{ parameters.pool }}
+        environment: ${{ parameters.environmentName }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: ${{ parameters.artifactName }}
+                - task: AzureCLI@2
+                  displayName: Deploy (${{ parameters.environmentName }})
+                  inputs:
+                    azureSubscription: ${{ parameters.serviceConnection }}
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      cd "${PIPELINE_WORKSPACE}/${ARTIFACT_NAME}"
+                      args=()
+                      if [[ "${PARAMETERS_FILE}" == *.bicepparam ]]; then
+                        args+=(--parameters "${PARAMETERS_FILE}")
+                      else
+                        args+=(--template-file "${TEMPLATE_FILE}")
+                        if [ -n "${PARAMETERS_FILE}" ]; then args+=(--parameters "${PARAMETERS_FILE}"); fi
+                      fi
+                      name="deploy-${ENVIRONMENT_NAME}-${BUILD_BUILDID}"
+                      if [ "${SCOPE}" = "subscription" ]; then
+                        az deployment sub create --name "${name}" --location "${LOCATION}" "${args[@]}" --only-show-errors
+                      else
+                        az deployment group create --name "${name}" --resource-group "${RESOURCE_GROUP}" "${args[@]}" \
+                          --mode Incremental --only-show-errors
+                      fi
+                  env:
+                    ARTIFACT_NAME: ${{ parameters.artifactName }}
+                    TEMPLATE_FILE: ${{ parameters.templateFile }}
+                    PARAMETERS_FILE: ${{ parameters.parametersFile }}
+                    SCOPE: ${{ parameters.deploymentScope }}
+                    RESOURCE_GROUP: ${{ parameters.resourceGroupName }}
+                    LOCATION: ${{ parameters.location }}
+                    ENVIRONMENT_NAME: ${{ parameters.environmentName }}

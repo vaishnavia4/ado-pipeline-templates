@@ -1,0 +1,82 @@
+# Stage: terraform init, validate and plan. The plan is published as an artifact for terraform-apply.
+parameters:
+  # Stage identifier (letters, digits, underscore).
+  - name: stageName
+    type: string
+    default: tf_plan
+  # Stages this stage depends on.
+  - name: dependsOn
+    type: object
+    default: []
+  # Stage condition.
+  - name: condition
+    type: string
+    default: succeeded()
+  # Agent pool definition.
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-24.04
+  # Target environment name, used in display names.
+  - name: environmentName
+    type: string
+  # ARM service connection (workload identity federation) for planning. Prefer a plan-only identity.
+  - name: serviceConnection
+    type: string
+  # Folder containing the Terraform configuration.
+  - name: workingDirectory
+    type: string
+    default: .
+  # Terraform version to install.
+  - name: terraformVersion
+    type: string
+    default: 1.9.8
+  # Backend resource group.
+  - name: backendResourceGroup
+    type: string
+  # Backend storage account.
+  - name: backendStorageAccount
+    type: string
+  # Backend blob container.
+  - name: backendContainer
+    type: string
+    default: tfstate
+  # Backend state blob key.
+  - name: backendKey
+    type: string
+  # Optional .tfvars file (relative to workingDirectory).
+  - name: varFile
+    type: string
+    default: ''
+  # Artifact name for the plan (unique per pipeline run).
+  - name: artifactName
+    type: string
+    default: tfplan
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: Terraform plan (${{ parameters.environmentName }})
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: ${{ parameters.condition }}
+    jobs:
+      - job: plan
+        displayName: Plan
+        pool: ${{ parameters.pool }}
+        steps:
+          - template: ../steps/checkout-secure.yml
+          - template: ../steps/terraform-run.yml
+            parameters:
+              command: plan
+              serviceConnection: ${{ parameters.serviceConnection }}
+              workingDirectory: ${{ parameters.workingDirectory }}
+              terraformVersion: ${{ parameters.terraformVersion }}
+              backendResourceGroup: ${{ parameters.backendResourceGroup }}
+              backendStorageAccount: ${{ parameters.backendStorageAccount }}
+              backendContainer: ${{ parameters.backendContainer }}
+              backendKey: ${{ parameters.backendKey }}
+              varFile: ${{ parameters.varFile }}
+          # The plan file can contain sensitive values. Keep artifact retention short.
+          - template: ../steps/publish-artifact.yml
+            parameters:
+              path: ${{ parameters.workingDirectory }}
+              artifactName: ${{ parameters.artifactName }}

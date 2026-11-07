@@ -1,0 +1,38 @@
+# Sets the appVersion variable and updates the build number.
+parameters:
+  # Versioning strategy: buildNumber (majorMinor.BuildId) or gitversion (needs the GitVersion extension).
+  - name: strategy
+    type: string
+    default: buildNumber
+    values:
+      - buildNumber
+      - gitversion
+  # Major.minor prefix used by the buildNumber strategy.
+  - name: majorMinor
+    type: string
+    default: '1.0'
+
+steps:
+  - ${{ if eq(parameters.strategy, 'gitversion') }}:
+      # TODO: needs the GitTools GitVersion Marketplace extension; confirm task major versions in your organization.
+      - task: gitversion/setup@3
+        displayName: Install GitVersion
+        inputs:
+          versionSpec: 6.x
+      - task: gitversion/execute@3
+        displayName: Calculate version
+      - bash: |
+          echo "##vso[task.setvariable variable=appVersion]${SEMVER}"
+          echo "##vso[build.updatebuildnumber]${SEMVER}"
+        displayName: Publish calculated version
+        env:
+          SEMVER: $(GitVersion.SemVer)
+  - ${{ if eq(parameters.strategy, 'buildNumber') }}:
+      - bash: |
+          version="${MAJOR_MINOR}.${BUILD_ID}"
+          echo "##vso[task.setvariable variable=appVersion]${version}"
+          echo "##vso[build.updatebuildnumber]${version}"
+        displayName: Set version from build id
+        env:
+          MAJOR_MINOR: ${{ parameters.majorMinor }}
+          BUILD_ID: $(Build.BuildId)

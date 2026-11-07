@@ -1,0 +1,67 @@
+# Stage: post a message to a Microsoft Teams channel (Workflows webhook) when the pipeline fails.
+parameters:
+  # Stage identifier (letters, digits, underscore).
+  - name: stageName
+    type: string
+    default: notify
+  # Stages to watch. Must not be empty, otherwise the stage would run immediately.
+  - name: dependsOn
+    type: object
+  # Stage condition. failed() runs when any watched stage failed.
+  - name: condition
+    type: string
+    default: failed()
+  # Agent pool definition.
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-24.04
+  # Variable group linked to Key Vault that provides the secret TEAMS_WEBHOOK_URL.
+  - name: variableGroup
+    type: string
+  # Message title.
+  - name: title
+    type: string
+    default: Pipeline failed
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: Notify Teams
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: ${{ parameters.condition }}
+    variables:
+      - group: ${{ parameters.variableGroup }}
+    jobs:
+      - job: notify
+        displayName: Post to Teams
+        pool: ${{ parameters.pool }}
+        steps:
+          - checkout: none
+          - bash: |
+              set -euo pipefail
+              payload="$(jq --null-input \
+                --arg title "${TITLE}" \
+                --arg text "${PIPELINE} run ${RUN} on ${BRANCH} by ${REQUESTED_FOR}" \
+                --arg url "${RUN_URL}" '
+                {type: "message", attachments: [{
+                  contentType: "application/vnd.microsoft.card.adaptive",
+                  content: {
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    type: "AdaptiveCard", version: "1.4",
+                    body: [
+                      {type: "TextBlock", size: "Medium", weight: "Bolder", text: $title},
+                      {type: "TextBlock", wrap: true, text: $text}
+                    ],
+                    actions: [{type: "Action.OpenUrl", title: "Open run", url: $url}]
+                  }}]}')"
+              curl --fail --silent --show-error --request POST \
+                --header 'Content-Type: application/json' --data "${payload}" "${TEAMS_WEBHOOK_URL}"
+            displayName: Send notification
+            env:
+              TEAMS_WEBHOOK_URL: $(TEAMS_WEBHOOK_URL)
+              TITLE: ${{ parameters.title }}
+              PIPELINE: $(Build.DefinitionName)
+              RUN: $(Build.BuildNumber)
+              BRANCH: $(Build.SourceBranchName)
+              REQUESTED_FOR: $(Build.RequestedFor)
+              RUN_URL: $(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)

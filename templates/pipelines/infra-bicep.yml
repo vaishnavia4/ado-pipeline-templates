@@ -1,0 +1,49 @@
+# Extends template: Bicep validate, what-if and deploy for every environment in the list.
+# Use it with `extends:` so the stage structure is owned by the platform team.
+parameters:
+  # Environments in promotion order. Each item needs: name, environmentName, validateServiceConnection,
+  # deployServiceConnection, resourceGroupName, location, parametersFile, dependsOn (list of stage names).
+  - name: environments
+    type: object
+  # Folder containing the Bicep files.
+  - name: workingDirectory
+    type: string
+    default: infra
+  # Main Bicep file (relative to workingDirectory).
+  - name: templateFile
+    type: string
+    default: main.bicep
+  # Agent pool definition.
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-24.04
+
+stages:
+  - ${{ each env in parameters.environments }}:
+      - template: ../stages/bicep-validate.yml
+        parameters:
+          stageName: validate_${{ env.name }}
+          dependsOn: ${{ env.dependsOn }}
+          pool: ${{ parameters.pool }}
+          environmentName: ${{ env.environmentName }}
+          serviceConnection: ${{ env.validateServiceConnection }}
+          resourceGroupName: ${{ env.resourceGroupName }}
+          location: ${{ env.location }}
+          workingDirectory: ${{ parameters.workingDirectory }}
+          templateFile: ${{ parameters.templateFile }}
+          parametersFile: ${{ env.parametersFile }}
+          artifactName: bicep_${{ env.name }}
+      - template: ../stages/bicep-deploy.yml
+        parameters:
+          stageName: deploy_${{ env.name }}
+          dependsOn:
+            - validate_${{ env.name }}
+          pool: ${{ parameters.pool }}
+          environmentName: ${{ env.environmentName }}
+          serviceConnection: ${{ env.deployServiceConnection }}
+          resourceGroupName: ${{ env.resourceGroupName }}
+          location: ${{ env.location }}
+          templateFile: ${{ parameters.templateFile }}
+          parametersFile: ${{ env.parametersFile }}
+          artifactName: bicep_${{ env.name }}

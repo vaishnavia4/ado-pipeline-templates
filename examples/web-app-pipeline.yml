@@ -1,0 +1,125 @@
+# Example: multi-stage web app pipeline.
+# build (with unit tests) -> scan -> deploy DEV -> deploy UAT (approval) -> deploy PRD (gate and approval)
+# Copy this file into your application repository as azure-pipelines.yml.
+name: $(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - docs/*
+      - '*.md'
+
+pr:
+  branches:
+    include:
+      - main
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: contoso-platform/ado-pipeline-templates
+      # Pin to a tag. Never track main.
+      ref: refs/tags/v1.0.0
+
+variables:
+  # Non-secret shared values. Secrets come from variable groups linked to Key Vault.
+  - name: dotnetVersion
+    value: 8.x
+
+stages:
+  - template: templates/stages/build-dotnet.yml@templates
+    parameters:
+      stageName: build
+      dotnetVersion: ${{ variables.dotnetVersion }}
+      solution: src/Contoso.Web.sln
+      publishProjects: src/Contoso.Web/Contoso.Web.csproj
+      majorMinor: '1.4'
+
+  - template: templates/stages/security-scans.yml@templates
+    parameters:
+      stageName: scan
+      dependsOn:
+        - build
+      enableSnyk: true
+      snykServiceConnection: snyk-contoso
+      snykOrganization: contoso-org-id
+      sonarProvider: sonarcloud
+      sonarServiceConnection: sonarcloud-contoso
+      sonarOrganization: contoso
+      sonarProjectKey: contoso_web
+
+  - template: templates/stages/app-service-deploy.yml@templates
+    parameters:
+      stageName: deploy_dev
+      dependsOn:
+        - scan
+      condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+      environmentName: contoso-web-dev
+      serviceConnection: sc-contoso-web-dev
+      resourceGroupName: rg-contoso-web-dev
+      appName: app-contoso-web-dev
+      slotUrl: https://app-contoso-web-dev-staging.azurewebsites.net
+      productionUrl: https://app-contoso-web-dev.azurewebsites.net
+      variableGroup: contoso-web-dev-secrets
+
+  - template: templates/stages/playwright-tests.yml@templates
+    parameters:
+      stageName: smoke_dev
+      dependsOn:
+        - deploy_dev
+      workingDirectory: tests/e2e
+      baseUrl: https://app-contoso-web-dev.azurewebsites.net
+      extraArgs: --grep @smoke
+      variableGroup: contoso-web-dev-secrets
+
+  # Approvals for UAT and PRD are configured on the Azure DevOps environments, not in YAML.
+  - template: templates/stages/app-service-deploy.yml@templates
+    parameters:
+      stageName: deploy_uat
+      dependsOn:
+        - smoke_dev
+      environmentName: contoso-web-uat
+      serviceConnection: sc-contoso-web-uat
+      resourceGroupName: rg-contoso-web-uat
+      appName: app-contoso-web-uat
+      slotUrl: https://app-contoso-web-uat-staging.azurewebsites.net
+      productionUrl: https://app-contoso-web-uat.azurewebsites.net
+      variableGroup: contoso-web-uat-secrets
+
+  - template: templates/stages/release-gates.yml@templates
+    parameters:
+      stageName: gate_prd
+      dependsOn:
+        - deploy_uat
+      timeZone: America/Chicago
+      notifyUsers: release-approvers@contoso.example
+      instructions: Confirm UAT sign-off before promoting to production.
+
+  - template: templates/stages/app-service-deploy.yml@templates
+    parameters:
+      stageName: deploy_prd
+      dependsOn:
+        - gate_prd
+      environmentName: contoso-web-prd
+      serviceConnection: sc-contoso-web-prd
+      resourceGroupName: rg-contoso-web-prd
+      appName: app-contoso-web-prd
+      slotUrl: https://app-contoso-web-prd-staging.azurewebsites.net
+      productionUrl: https://www.contoso.example
+      variableGroup: contoso-web-prd-secrets
+
+  - template: templates/stages/notify-teams.yml@templates
+    parameters:
+      dependsOn:
+        - build
+        - scan
+        - deploy_dev
+        - smoke_dev
+        - deploy_uat
+        - gate_prd
+        - deploy_prd
+      variableGroup: contoso-notifications

@@ -1,0 +1,102 @@
+# Lint, test, build and publish a Node.js application.
+parameters:
+  # Agent pool definition.
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-24.04
+  # Node.js version spec.
+  - name: nodeVersion
+    type: string
+    default: 20.x
+  # Folder containing package.json.
+  - name: workingDirectory
+    type: string
+    default: .
+  # Lint command. Leave empty to skip.
+  - name: lintCommand
+    type: string
+    default: npm run lint --if-present
+  # Test command. Leave empty to skip. Configure a JUnit reporter in your test runner.
+  - name: testCommand
+    type: string
+    default: npm test --if-present
+  # Build command. Leave empty to skip.
+  - name: buildCommand
+    type: string
+    default: npm run build --if-present
+  # JUnit result file glob.
+  - name: testResultsFiles
+    type: string
+    default: '**/junit*.xml'
+  # Cobertura coverage summary glob.
+  - name: coverageFiles
+    type: string
+    default: '**/coverage/cobertura-coverage.xml'
+  # Build output folder (relative to workingDirectory) to publish.
+  - name: outputPath
+    type: string
+    default: dist
+  # Versioning strategy: buildNumber or gitversion.
+  - name: versionStrategy
+    type: string
+    default: buildNumber
+  # Major.minor prefix for the buildNumber strategy.
+  - name: majorMinor
+    type: string
+    default: '1.0'
+  # Pipeline artifact name.
+  - name: artifactName
+    type: string
+    default: drop
+
+jobs:
+  - job: build_node
+    displayName: Build and test (Node.js)
+    pool: ${{ parameters.pool }}
+    steps:
+      - ${{ if eq(parameters.versionStrategy, 'gitversion') }}:
+          - template: ../steps/checkout-secure.yml
+            parameters:
+              fetchDepth: 0
+      - ${{ if ne(parameters.versionStrategy, 'gitversion') }}:
+          - template: ../steps/checkout-secure.yml
+      - template: ../steps/set-version.yml
+        parameters:
+          strategy: ${{ parameters.versionStrategy }}
+          majorMinor: ${{ parameters.majorMinor }}
+      - template: ../steps/node-setup-cache.yml
+        parameters:
+          nodeVersion: ${{ parameters.nodeVersion }}
+          workingDirectory: ${{ parameters.workingDirectory }}
+      - ${{ if ne(parameters.lintCommand, '') }}:
+          - script: ${{ parameters.lintCommand }}
+            displayName: Lint
+            workingDirectory: ${{ parameters.workingDirectory }}
+      - ${{ if ne(parameters.testCommand, '') }}:
+          - script: ${{ parameters.testCommand }}
+            displayName: Test
+            workingDirectory: ${{ parameters.workingDirectory }}
+          - task: PublishTestResults@2
+            displayName: Publish test results
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: ${{ parameters.testResultsFiles }}
+              searchFolder: ${{ parameters.workingDirectory }}
+              failTaskOnFailedTests: true
+          - task: PublishCodeCoverageResults@2
+            displayName: Publish code coverage
+            condition: succeededOrFailed()
+            inputs:
+              summaryFileLocation: ${{ parameters.coverageFiles }}
+      - ${{ if ne(parameters.buildCommand, '') }}:
+          - script: ${{ parameters.buildCommand }}
+            displayName: Build
+            workingDirectory: ${{ parameters.workingDirectory }}
+            env:
+              APP_VERSION: $(appVersion)
+      - template: ../steps/publish-artifact.yml
+        parameters:
+          path: ${{ parameters.workingDirectory }}/${{ parameters.outputPath }}
+          artifactName: ${{ parameters.artifactName }}

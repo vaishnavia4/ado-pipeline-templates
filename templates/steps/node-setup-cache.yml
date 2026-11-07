@@ -1,0 +1,32 @@
+# Installs Node.js, restores the npm cache and runs a clean install.
+parameters:
+  # Node.js version spec.
+  - name: nodeVersion
+    type: string
+    default: 20.x
+  # Folder containing package.json.
+  - name: workingDirectory
+    type: string
+    default: .
+  # Install command.
+  - name: installCommand
+    type: string
+    default: npm ci --no-audit --no-fund
+
+steps:
+  - task: NodeTool@0
+    displayName: Use Node.js ${{ parameters.nodeVersion }}
+    inputs:
+      versionSpec: ${{ parameters.nodeVersion }}
+  - bash: echo "##vso[task.setvariable variable=npm_config_cache]$(Pipeline.Workspace)/.npm"
+    displayName: Set npm cache folder
+  - task: Cache@2
+    displayName: Cache npm packages
+    inputs:
+      key: 'npm | "$(Agent.OS)" | **/package-lock.json,!**/node_modules/**'
+      restoreKeys: |
+        npm | "$(Agent.OS)"
+      path: $(npm_config_cache)
+  - script: ${{ parameters.installCommand }}
+    displayName: Install dependencies
+    workingDirectory: ${{ parameters.workingDirectory }}

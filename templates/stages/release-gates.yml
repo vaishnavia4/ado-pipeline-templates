@@ -1,0 +1,118 @@
+# Stage: gates in front of a deployment: business-hours window, manual validation, environment approvals and checks.
+parameters:
+  # Stage identifier (letters, digits, underscore).
+  - name: stageName
+    type: string
+    default: release_gate
+  # Stages this stage depends on.
+  - name: dependsOn
+    type: object
+    default: []
+  # Stage condition.
+  - name: condition
+    type: string
+    default: succeeded()
+  # Agent pool definition.
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-24.04
+  # Fail unless the run happens inside the business-hours window.
+  - name: enforceBusinessHours
+    type: boolean
+    default: true
+  # IANA time zone for the window, for example America/Denver.
+  - name: timeZone
+    type: string
+    default: America/Chicago
+  # First allowed hour (0 to 23, inclusive).
+  - name: startHour
+    type: number
+    default: 8
+  # Last allowed hour (0 to 23, exclusive).
+  - name: endHour
+    type: number
+    default: 16
+  # Allowed ISO weekdays, 1 is Monday and 7 is Sunday, for example 12345.
+  - name: allowedDays
+    type: string
+    default: '12345'
+  # Require a manual validation (ManualValidation@0 runs on the server pool).
+  - name: manualValidation
+    type: boolean
+    default: true
+  # Users or groups notified of the pending validation (comma separated).
+  - name: notifyUsers
+    type: string
+    default: ''
+  # Instructions shown to the approver.
+  - name: instructions
+    type: string
+    default: Review the change and resume to promote.
+  # Minutes before the validation times out and rejects.
+  - name: manualTimeoutInMinutes
+    type: number
+    default: 1440
+  # Optional Azure DevOps environment whose approvals and checks must pass. Leave empty for none.
+  - name: environmentName
+    type: string
+    default: ''
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: Release gate
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: ${{ parameters.condition }}
+    jobs:
+      - ${{ if eq(parameters.enforceBusinessHours, true) }}:
+          - job: business_hours
+            displayName: Business hours check
+            pool: ${{ parameters.pool }}
+            steps:
+              - checkout: none
+              - bash: |
+                  set -euo pipefail
+                  hour="$(TZ="${TIME_ZONE}" date +%H)"
+                  day="$(TZ="${TIME_ZONE}" date +%u)"
+                  hour=$((10#${hour}))
+                  echo "Local time in ${TIME_ZONE}: day ${day}, hour ${hour}"
+                  if [[ "${ALLOWED_DAYS}" != *"${day}"* ]]; then
+                    echo "##vso[task.logissue type=error]Releases are not allowed on weekday ${day}."
+                    exit 1
+                  fi
+                  if [ "${hour}" -lt "${START_HOUR}" ] || [ "${hour}" -ge "${END_HOUR}" ]; then
+                    echo "##vso[task.logissue type=error]Outside the release window ${START_HOUR}:00 to ${END_HOUR}:00."
+                    exit 1
+                  fi
+                displayName: Check release window
+                env:
+                  TIME_ZONE: ${{ parameters.timeZone }}
+                  START_HOUR: ${{ parameters.startHour }}
+                  END_HOUR: ${{ parameters.endHour }}
+                  ALLOWED_DAYS: ${{ parameters.allowedDays }}
+      - ${{ if eq(parameters.manualValidation, true) }}:
+          - job: manual_validation
+            displayName: Manual validation
+            pool: server
+            timeoutInMinutes: ${{ parameters.manualTimeoutInMinutes }}
+            steps:
+              - task: ManualValidation@0
+                displayName: Wait for approval
+                timeoutInMinutes: ${{ parameters.manualTimeoutInMinutes }}
+                inputs:
+                  notifyUsers: ${{ parameters.notifyUsers }}
+                  instructions: ${{ parameters.instructions }}
+                  onTimeout: reject
+      - ${{ if ne(parameters.environmentName, '') }}:
+          - deployment: environment_gate
+            displayName: Environment approvals and checks
+            pool: ${{ parameters.pool }}
+            environment: ${{ parameters.environmentName }}
+            strategy:
+              runOnce:
+                deploy:
+                  steps:
+                    - bash: echo "Approvals and checks on ${ENVIRONMENT_NAME} passed."
+                      displayName: Gate passed
+                      env:
+                        ENVIRONMENT_NAME: ${{ parameters.environmentName }}

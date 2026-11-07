@@ -1,0 +1,91 @@
+# Stage: build a container image and push it to Azure Container Registry using workload identity federation.
+parameters:
+  # Stage identifier (letters, digits, underscore).
+  - name: stageName
+    type: string
+    default: container
+  # Stages this stage depends on.
+  - name: dependsOn
+    type: object
+    default: []
+  # Stage condition.
+  - name: condition
+    type: string
+    default: succeeded()
+  # Agent pool definition (must provide Docker).
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-24.04
+  # ARM service connection (workload identity federation) with the AcrPush role on the registry.
+  - name: serviceConnection
+    type: string
+  # Registry name without the azurecr.io suffix.
+  - name: acrName
+    type: string
+  # Repository name inside the registry.
+  - name: repository
+    type: string
+  # Dockerfile path.
+  - name: dockerfile
+    type: string
+    default: Dockerfile
+  # Docker build context folder.
+  - name: buildContext
+    type: string
+    default: .
+  # Versioning strategy: buildNumber or gitversion.
+  - name: versionStrategy
+    type: string
+    default: buildNumber
+  # Major.minor prefix for the buildNumber strategy.
+  - name: majorMinor
+    type: string
+    default: '1.0'
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: Container build and push
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: ${{ parameters.condition }}
+    jobs:
+      - job: build_push
+        displayName: Build and push ${{ parameters.repository }}
+        pool: ${{ parameters.pool }}
+        steps:
+          - ${{ if eq(parameters.versionStrategy, 'gitversion') }}:
+              - template: ../steps/checkout-secure.yml
+                parameters:
+                  fetchDepth: 0
+          - ${{ if ne(parameters.versionStrategy, 'gitversion') }}:
+              - template: ../steps/checkout-secure.yml
+          - template: ../steps/set-version.yml
+            parameters:
+              strategy: ${{ parameters.versionStrategy }}
+              majorMinor: ${{ parameters.majorMinor }}
+          # Docker@2 needs a Docker registry service connection. This template logs in through the ARM
+          # connection instead, so no registry credentials exist anywhere.
+          - task: AzureCLI@2
+            name: push
+            displayName: Build and push image
+            inputs:
+              azureSubscription: ${{ parameters.serviceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az acr login --name "${ACR_NAME}"
+                image="${ACR_NAME}.azurecr.io/${REPOSITORY}"
+                short_sha="${BUILD_SOURCEVERSION:0:7}"
+                docker build --pull --file "${DOCKERFILE}" \
+                  --tag "${image}:${APP_VERSION}" --tag "${image}:${short_sha}" "${BUILD_CONTEXT}"
+                docker push --all-tags "${image}"
+                digest="$(docker inspect --format='{{index .RepoDigests 0}}' "${image}:${APP_VERSION}")"
+                echo "Pushed ${digest}"
+                echo "##vso[task.setvariable variable=imageDigest;isOutput=true]${digest}"
+            env:
+              ACR_NAME: ${{ parameters.acrName }}
+              REPOSITORY: ${{ parameters.repository }}
+              DOCKERFILE: ${{ parameters.dockerfile }}
+              BUILD_CONTEXT: ${{ parameters.buildContext }}
+              APP_VERSION: $(appVersion)

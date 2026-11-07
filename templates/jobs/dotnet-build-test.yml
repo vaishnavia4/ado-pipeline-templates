@@ -1,0 +1,79 @@
+# Build, test and publish a .NET application.
+parameters:
+  # Agent pool definition.
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-24.04
+  # .NET SDK version spec.
+  - name: dotnetVersion
+    type: string
+    default: 8.x
+  # Solution or project glob to restore, build and test.
+  - name: solution
+    type: string
+    default: '**/*.sln'
+  # Projects to publish (glob).
+  - name: publishProjects
+    type: string
+    default: '**/*.csproj'
+  # Build configuration.
+  - name: buildConfiguration
+    type: string
+    default: Release
+  # Run unit tests and publish results and coverage.
+  - name: runTests
+    type: boolean
+    default: true
+  # Versioning strategy: buildNumber or gitversion.
+  - name: versionStrategy
+    type: string
+    default: buildNumber
+  # Major.minor prefix for the buildNumber strategy.
+  - name: majorMinor
+    type: string
+    default: '1.0'
+  # Pipeline artifact name.
+  - name: artifactName
+    type: string
+    default: drop
+
+jobs:
+  - job: build_dotnet
+    displayName: Build and test (.NET)
+    pool: ${{ parameters.pool }}
+    steps:
+      - ${{ if eq(parameters.versionStrategy, 'gitversion') }}:
+          - template: ../steps/checkout-secure.yml
+            parameters:
+              fetchDepth: 0
+      - ${{ if ne(parameters.versionStrategy, 'gitversion') }}:
+          - template: ../steps/checkout-secure.yml
+      - template: ../steps/set-version.yml
+        parameters:
+          strategy: ${{ parameters.versionStrategy }}
+          majorMinor: ${{ parameters.majorMinor }}
+      - task: UseDotNet@2
+        displayName: Use .NET SDK ${{ parameters.dotnetVersion }}
+        inputs:
+          packageType: sdk
+          version: ${{ parameters.dotnetVersion }}
+      - template: ../steps/dotnet-restore-test.yml
+        parameters:
+          solution: ${{ parameters.solution }}
+          buildConfiguration: ${{ parameters.buildConfiguration }}
+          runTests: ${{ parameters.runTests }}
+      - task: DotNetCoreCLI@2
+        displayName: dotnet publish
+        inputs:
+          command: publish
+          publishWebProjects: false
+          projects: ${{ parameters.publishProjects }}
+          arguments: >-
+            --configuration ${{ parameters.buildConfiguration }} --no-build
+            --output $(Build.ArtifactStagingDirectory)/publish -p:Version=$(appVersion)
+          zipAfterPublish: true
+      - template: ../steps/publish-artifact.yml
+        parameters:
+          path: $(Build.ArtifactStagingDirectory)/publish
+          artifactName: ${{ parameters.artifactName }}

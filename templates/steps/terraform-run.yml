@@ -1,0 +1,88 @@
+# Runs terraform plan or apply with workload identity federation (OIDC), no client secret.
+parameters:
+  # Command to run: plan or apply.
+  - name: command
+    type: string
+    values:
+      - plan
+      - apply
+  # ARM service connection (workload identity federation).
+  - name: serviceConnection
+    type: string
+  # Folder containing the Terraform configuration.
+  - name: workingDirectory
+    type: string
+    default: .
+  # Terraform version to install.
+  - name: terraformVersion
+    type: string
+    default: 1.9.8
+  # Backend resource group.
+  - name: backendResourceGroup
+    type: string
+  # Backend storage account.
+  - name: backendStorageAccount
+    type: string
+  # Backend blob container.
+  - name: backendContainer
+    type: string
+    default: tfstate
+  # Backend state blob key.
+  - name: backendKey
+    type: string
+  # Optional .tfvars file (relative to workingDirectory).
+  - name: varFile
+    type: string
+    default: ''
+
+steps:
+  # TODO: needs the Terraform Installer Marketplace extension; confirm the task version in your organization.
+  - task: TerraformInstaller@1
+    displayName: Install Terraform ${{ parameters.terraformVersion }}
+    inputs:
+      terraformVersion: ${{ parameters.terraformVersion }}
+  - task: AzureCLI@2
+    displayName: terraform ${{ parameters.command }}
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      addSpnToEnvironment: true
+      inlineScript: |
+        set -euo pipefail
+        export ARM_USE_OIDC=true
+        export ARM_USE_AZUREAD=true
+        export ARM_CLIENT_ID="${servicePrincipalId}"
+        export ARM_TENANT_ID="${tenantId}"
+        export ARM_OIDC_TOKEN="${idToken}"
+        ARM_SUBSCRIPTION_ID="$(az account show --query id --output tsv)"
+        export ARM_SUBSCRIPTION_ID
+        cd "${WORKING_DIRECTORY}"
+        terraform init -input=false \
+          -backend-config="resource_group_name=${BACKEND_RESOURCE_GROUP}" \
+          -backend-config="storage_account_name=${BACKEND_STORAGE_ACCOUNT}" \
+          -backend-config="container_name=${BACKEND_CONTAINER}" \
+          -backend-config="key=${BACKEND_KEY}"
+        if [ "${TF_COMMAND}" = "plan" ]; then
+          terraform validate
+          var_args=()
+          if [ -n "${VAR_FILE}" ]; then var_args+=("-var-file=${VAR_FILE}"); fi
+          set +e
+          terraform plan -input=false -lock-timeout=5m -detailed-exitcode -out=tfplan "${var_args[@]}"
+          code=$?
+          set -e
+          if [ "${code}" -eq 1 ]; then exit 1; fi
+          terraform show -no-color tfplan > plan.txt
+          # Keep provider binaries out of the published plan artifact.
+          printf '.terraform/\n' > .artifactignore
+        else
+          terraform apply -input=false -lock-timeout=5m tfplan
+        fi
+    env:
+      TF_COMMAND: ${{ parameters.command }}
+      WORKING_DIRECTORY: ${{ parameters.workingDirectory }}
+      BACKEND_RESOURCE_GROUP: ${{ parameters.backendResourceGroup }}
+      BACKEND_STORAGE_ACCOUNT: ${{ parameters.backendStorageAccount }}
+      BACKEND_CONTAINER: ${{ parameters.backendContainer }}
+      BACKEND_KEY: ${{ parameters.backendKey }}
+      VAR_FILE: ${{ parameters.varFile }}

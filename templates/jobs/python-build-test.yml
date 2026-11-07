@@ -1,0 +1,105 @@
+# Install, lint, test and package a Python application.
+parameters:
+  # Agent pool definition.
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-24.04
+  # Python version spec.
+  - name: pythonVersion
+    type: string
+    default: '3.12'
+  # Folder containing the application.
+  - name: workingDirectory
+    type: string
+    default: .
+  # Requirements file (relative to workingDirectory). Must include pytest and pytest-cov.
+  - name: requirementsFile
+    type: string
+    default: requirements.txt
+  # Lint command. Leave empty to skip (for example: ruff check .).
+  - name: lintCommand
+    type: string
+    default: ''
+  # Extra arguments passed to pytest.
+  - name: pytestArgs
+    type: string
+    default: ''
+  # Versioning strategy: buildNumber or gitversion.
+  - name: versionStrategy
+    type: string
+    default: buildNumber
+  # Major.minor prefix for the buildNumber strategy.
+  - name: majorMinor
+    type: string
+    default: '1.0'
+  # Pipeline artifact name.
+  - name: artifactName
+    type: string
+    default: drop
+
+jobs:
+  - job: build_python
+    displayName: Build and test (Python)
+    pool: ${{ parameters.pool }}
+    steps:
+      - ${{ if eq(parameters.versionStrategy, 'gitversion') }}:
+          - template: ../steps/checkout-secure.yml
+            parameters:
+              fetchDepth: 0
+      - ${{ if ne(parameters.versionStrategy, 'gitversion') }}:
+          - template: ../steps/checkout-secure.yml
+      - template: ../steps/set-version.yml
+        parameters:
+          strategy: ${{ parameters.versionStrategy }}
+          majorMinor: ${{ parameters.majorMinor }}
+      - task: UsePythonVersion@0
+        displayName: Use Python ${{ parameters.pythonVersion }}
+        inputs:
+          versionSpec: ${{ parameters.pythonVersion }}
+      - bash: echo "##vso[task.setvariable variable=PIP_CACHE_DIR]$(Pipeline.Workspace)/.pip"
+        displayName: Set pip cache folder
+      - task: Cache@2
+        displayName: Cache pip packages
+        inputs:
+          key: 'pip | "$(Agent.OS)" | "${{ parameters.pythonVersion }}" | ${{ parameters.workingDirectory }}/${{ parameters.requirementsFile }}'
+          restoreKeys: |
+            pip | "$(Agent.OS)" | "${{ parameters.pythonVersion }}"
+          path: $(PIP_CACHE_DIR)
+      - script: python -m pip install --requirement ${{ parameters.requirementsFile }}
+        displayName: Install dependencies
+        workingDirectory: ${{ parameters.workingDirectory }}
+      - ${{ if ne(parameters.lintCommand, '') }}:
+          - script: ${{ parameters.lintCommand }}
+            displayName: Lint
+            workingDirectory: ${{ parameters.workingDirectory }}
+      - script: >-
+          python -m pytest
+          --junitxml=$(Build.ArtifactStagingDirectory)/test-results/junit.xml
+          --cov --cov-report=xml:$(Build.ArtifactStagingDirectory)/test-results/coverage.xml
+          ${{ parameters.pytestArgs }}
+        displayName: pytest
+        workingDirectory: ${{ parameters.workingDirectory }}
+      - task: PublishTestResults@2
+        displayName: Publish test results
+        condition: succeededOrFailed()
+        inputs:
+          testResultsFormat: JUnit
+          testResultsFiles: $(Build.ArtifactStagingDirectory)/test-results/junit.xml
+          failTaskOnFailedTests: true
+      - task: PublishCodeCoverageResults@2
+        displayName: Publish code coverage
+        condition: succeededOrFailed()
+        inputs:
+          summaryFileLocation: $(Build.ArtifactStagingDirectory)/test-results/coverage.xml
+      - task: ArchiveFiles@2
+        displayName: Package application
+        inputs:
+          rootFolderOrFile: ${{ parameters.workingDirectory }}
+          includeRootFolder: false
+          archiveType: zip
+          archiveFile: $(Build.ArtifactStagingDirectory)/package/app-$(appVersion).zip
+      - template: ../steps/publish-artifact.yml
+        parameters:
+          path: $(Build.ArtifactStagingDirectory)/package
+          artifactName: ${{ parameters.artifactName }}

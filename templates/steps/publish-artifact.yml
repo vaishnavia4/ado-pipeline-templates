@@ -1,0 +1,22 @@
+# Publishes a folder as a named pipeline artifact.
+parameters:
+  # Folder to publish.
+  - name: path
+    type: string
+  # Artifact name (unique per pipeline run).
+  - name: artifactName
+    type: string
+    default: drop
+  # Step condition.
+  - name: condition
+    type: string
+    default: succeeded()
+
+steps:
+  - task: PublishPipelineArtifact@1
+    displayName: Publish artifact ${{ parameters.artifactName }}
+    condition: ${{ parameters.condition }}
+    inputs:
+      targetPath: ${{ parameters.path }}
+      artifact: ${{ parameters.artifactName }}
+      publishLocation: pipeline

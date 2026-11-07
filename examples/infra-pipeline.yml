@@ -1,0 +1,54 @@
+# Example: infrastructure pipeline using an extends template.
+# For each environment: Bicep build and lint, what-if, then deploy behind the environment approval.
+# Copy this file into your infrastructure repository as azure-pipelines.yml.
+name: $(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - infra/*
+
+pr: none
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: contoso-platform/ado-pipeline-templates
+      ref: refs/tags/v1.0.0
+
+extends:
+  template: templates/pipelines/infra-bicep.yml@templates
+  parameters:
+    workingDirectory: infra
+    templateFile: main.bicep
+    environments:
+      - name: dev
+        environmentName: contoso-infra-dev
+        validateServiceConnection: sc-contoso-plan-dev
+        deployServiceConnection: sc-contoso-deploy-dev
+        resourceGroupName: rg-contoso-dev
+        location: eastus2
+        parametersFile: main.dev.bicepparam
+        dependsOn: []
+      - name: uat
+        environmentName: contoso-infra-uat
+        validateServiceConnection: sc-contoso-plan-uat
+        deployServiceConnection: sc-contoso-deploy-uat
+        resourceGroupName: rg-contoso-uat
+        location: eastus2
+        parametersFile: main.uat.bicepparam
+        dependsOn:
+          - deploy_dev
+      - name: prd
+        environmentName: contoso-infra-prd
+        validateServiceConnection: sc-contoso-plan-prd
+        deployServiceConnection: sc-contoso-deploy-prd
+        resourceGroupName: rg-contoso-prd
+        location: eastus2
+        parametersFile: main.prd.bicepparam
+        dependsOn:
+          - deploy_uat

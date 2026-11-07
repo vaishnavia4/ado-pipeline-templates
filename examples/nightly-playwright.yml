@@ -1,0 +1,38 @@
+# Example: scheduled nightly Playwright regression against UAT.
+# Copy this file into your test repository as azure-pipelines.yml.
+name: $(Date:yyyyMMdd)$(Rev:.r)
+
+trigger: none
+pr: none
+
+schedules:
+  - cron: '0 6 * * 1-5'
+    displayName: Weekday nightly regression (06:00 UTC)
+    branches:
+      include:
+        - main
+    always: true
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: contoso-platform/ado-pipeline-templates
+      ref: refs/tags/v1.0.0
+
+stages:
+  - template: templates/stages/playwright-tests.yml@templates
+    parameters:
+      stageName: regression
+      baseUrl: https://app-contoso-web-uat.azurewebsites.net
+      browsers: chromium firefox
+      timeoutInMinutes: 90
+      variableGroup: contoso-web-uat-secrets
+      reportArtifactName: playwright-report-nightly
+
+  - template: templates/stages/notify-teams.yml@templates
+    parameters:
+      dependsOn:
+        - regression
+      title: Nightly regression failed
+      variableGroup: contoso-notifications

@@ -1,0 +1,12 @@
+# Hardened checkout: no credentials left on disk for later steps.
+parameters:
+  # Clone depth. Use 0 for full history (GitVersion, secret scanning).
+  - name: fetchDepth
+    type: number
+    default: 1
+
+steps:
+  - checkout: self
+    clean: true
+    fetchDepth: ${{ parameters.fetchDepth }}
+    persistCredentials: false

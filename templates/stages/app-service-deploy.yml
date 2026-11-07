@@ -1,0 +1,148 @@
+# Stage: deploy a package to an App Service staging slot, health check, swap to production, verify, roll back on failure.
+parameters:
+  # Stage identifier (letters, digits, underscore).
+  - name: stageName
+    type: string
+  # Stages this stage depends on.
+  - name: dependsOn
+    type: object
+    default: []
+  # Stage condition.
+  - name: condition
+    type: string
+    default: succeeded()
+  # Agent pool definition.
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-24.04
+  # Azure DevOps environment name (approvals and checks are configured on it).
+  - name: environmentName
+    type: string
+  # ARM service connection (workload identity federation) with Website Contributor on the app.
+  - name: serviceConnection
+    type: string
+  # Resource group of the App Service.
+  - name: resourceGroupName
+    type: string
+  # App Service name.
+  - name: appName
+    type: string
+  # App type for AzureWebApp@1 (webAppLinux or webApp).
+  - name: appType
+    type: string
+    default: webAppLinux
+  # Staging slot name.
+  - name: slotName
+    type: string
+    default: staging
+  # Base URL of the staging slot, for example https://contoso-web-staging.azurewebsites.net.
+  - name: slotUrl
+    type: string
+  # Base URL of the production site.
+  - name: productionUrl
+    type: string
+  # Health endpoint path, expected to return HTTP 200.
+  - name: healthCheckPath
+    type: string
+    default: /health
+  # Health check attempts (10 seconds apart).
+  - name: healthCheckRetries
+    type: number
+    default: 12
+  # Pipeline artifact produced by the build stage.
+  - name: artifactName
+    type: string
+    default: drop
+  # Package glob inside the artifact.
+  - name: packagePattern
+    type: string
+    default: '*.zip'
+  # Optional variable group (link it to Key Vault for secrets). Leave empty for none.
+  - name: variableGroup
+    type: string
+    default: ''
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: Deploy (${{ parameters.environmentName }})
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: ${{ parameters.condition }}
+    variables:
+      - ${{ if ne(parameters.variableGroup, '') }}:
+          - group: ${{ parameters.variableGroup }}
+    jobs:
+      - deployment: deploy
+        displayName: Deploy to ${{ parameters.appName }}
+        pool: ${{ parameters.pool }}
+        environment: ${{ parameters.environmentName }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: ${{ parameters.artifactName }}
+                - task: AzureWebApp@1
+                  displayName: Deploy to ${{ parameters.slotName }} slot
+                  inputs:
+                    azureSubscription: ${{ parameters.serviceConnection }}
+                    appType: ${{ parameters.appType }}
+                    appName: ${{ parameters.appName }}
+                    deployToSlotOrASE: true
+                    resourceGroupName: ${{ parameters.resourceGroupName }}
+                    slotName: ${{ parameters.slotName }}
+                    package: $(Pipeline.Workspace)/${{ parameters.artifactName }}/${{ parameters.packagePattern }}
+                - bash: |
+                    set -euo pipefail
+                    url="${BASE_URL%/}${HEALTH_PATH}"
+                    for attempt in $(seq 1 "${RETRIES}"); do
+                      code="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 10 "${url}" || true)"
+                      echo "Attempt ${attempt}: ${url} returned ${code}"
+                      if [ "${code}" = "200" ]; then exit 0; fi
+                      sleep 10
+                    done
+                    echo "##vso[task.logissue type=error]Health check failed for ${url}"
+                    exit 1
+                  displayName: Health check (slot)
+                  env:
+                    BASE_URL: ${{ parameters.slotUrl }}
+                    HEALTH_PATH: ${{ parameters.healthCheckPath }}
+                    RETRIES: ${{ parameters.healthCheckRetries }}
+                - task: AzureAppServiceManage@0
+                  displayName: Swap ${{ parameters.slotName }} to production
+                  inputs:
+                    azureSubscription: ${{ parameters.serviceConnection }}
+                    Action: Swap Slots
+                    WebAppName: ${{ parameters.appName }}
+                    ResourceGroupName: ${{ parameters.resourceGroupName }}
+                    SourceSlot: ${{ parameters.slotName }}
+                    SwapWithProduction: true
+                - bash: echo "##vso[task.setvariable variable=swapped]true"
+                  displayName: Record swap
+                - bash: |
+                    set -euo pipefail
+                    url="${BASE_URL%/}${HEALTH_PATH}"
+                    for attempt in $(seq 1 "${RETRIES}"); do
+                      code="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 10 "${url}" || true)"
+                      echo "Attempt ${attempt}: ${url} returned ${code}"
+                      if [ "${code}" = "200" ]; then exit 0; fi
+                      sleep 10
+                    done
+                    echo "##vso[task.logissue type=error]Production health check failed for ${url}"
+                    exit 1
+                  displayName: Health check (production)
+                  env:
+                    BASE_URL: ${{ parameters.productionUrl }}
+                    HEALTH_PATH: ${{ parameters.healthCheckPath }}
+                    RETRIES: ${{ parameters.healthCheckRetries }}
+                # Swapping again puts the previous production build back.
+                - task: AzureAppServiceManage@0
+                  displayName: Roll back (swap again)
+                  condition: and(failed(), eq(variables['swapped'], 'true'))
+                  inputs:
+                    azureSubscription: ${{ parameters.serviceConnection }}
+                    Action: Swap Slots
+                    WebAppName: ${{ parameters.appName }}
+                    ResourceGroupName: ${{ parameters.resourceGroupName }}
+                    SourceSlot: ${{ parameters.slotName }}
+                    SwapWithProduction: true
